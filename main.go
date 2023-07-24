@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"database/sql"
 
 	"strings"
 	"time"
@@ -19,8 +20,6 @@ type User struct {
 	Username string `json:"username"`
 	PasswordHash string `json:"password_hash"`
 }
-
-
 //資格情報
 type Credentials struct {
 	Password string `json:"password"`
@@ -31,7 +30,18 @@ type Token struct {
 	Token string `json:"token"`
 }
 
-var db *sqlx.DB
+//DB interface is used for *MockDB and *sqlx.DB
+type App struct {
+	DB DBInterface
+}
+
+type DBInterface interface {
+	Select(dest interface{}, query string, args ...interface{}) error
+	Get(dest interface{}, query string, args ...interface{}) error
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	NamedExec(query string, arg interface{}) (sql.Result, error)
+}
+
 
 var users = map[string]string{
 	"user1": "password1",
@@ -54,7 +64,7 @@ func GenerateToken(username string) (string, error) {
 
 //リクエストをレスポンスにする
 //エラー1. リクエストの解析に失敗
-func LoginHandler(w http.ResponseWriter, r *http.Request) {
+func (a *App) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("LoginHandler called with %s method", r.Method)
 	
 	//デバッグ　リクエストのボディをログに出すコード。
@@ -94,7 +104,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(newToken)
 }
 
-func VerifyHandler(w http.ResponseWriter, r *http.Request) {
+func (a *App) VerifyHandler(w http.ResponseWriter, r *http.Request) {
     // Get the token from the header
     authHeader := r.Header.Get("Authorization")
     tokenString := strings.Split(authHeader, " ")[1]
@@ -127,12 +137,12 @@ func VerifyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 
-func UsersHandler(w http.ResponseWriter, r *http.Request) {
+func (a *App) UsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case "GET":
 		users := []User{}
-		err := db.Select(&users, "SELECT * FROM users")
+		err := a.DB.Select(&users, "SELECT * FROM users")
 		if err != nil {
 			http.Error(w, "Failed to get users", http.StatusInternalServerError)
 			return
@@ -146,7 +156,7 @@ func UsersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		_, err = db.NamedExec(`INSERT INTO users (username, password_hash) VALUES (:username, :password)`,
+		_, err = a.DB.NamedExec(`INSERT INTO users (username, password_hash) VALUES (:username, :password)`,
 			map[string]interface{}{
 				"username": user.Username,
 				"password_hash": user.PasswordHash,
@@ -165,7 +175,7 @@ func UsersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		
-		_, err = db.NamedExec(`UPDATE users SET username = :username, password_hash = :password_hash`, 
+		_, err = a.DB.NamedExec(`UPDATE users SET username = :username, password_hash = :password_hash`, 
 		map[string]interface{}{
 			"id": user.ID,
 			"username": user.Username,
@@ -185,7 +195,7 @@ func UsersHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing URL parameter id", http.StatusBadRequest)
 			return
 		}
-		_, err := db.Exec(`DELETE FROM users WHERE id = $1`, id)
+		_, err := a.DB.Exec(`DELETE FROM users WHERE id = $1`, id)
 		if err != nil {
 			http.Error(w, "Failed to delete user", http.StatusInternalServerError)
 			return
@@ -197,17 +207,34 @@ func UsersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/users":
+		a.UsersHandler(w, r)
+	case "/login":
+		a.LoginHandler(w, r)
+	case "/verify":
+		a.VerifyHandler(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 func main() {
-	router := mux.NewRouter()
 
-	router.HandleFunc("/users/{id}", UsersHandler)
-	router.HandleFunc("/login", LoginHandler)
-	router.HandleFunc("/verify", VerifyHandler)
+	db, err := sqlx.Connect("postgres", "user=foo dbname=bar sslmode=disable")
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	http.Handle("/", router)
+	app := &App {
+		DB: db,
+	}
+
+	http.Handle("/", app)
 
 	log.Println("Starting server on :8010")
-	err := http.ListenAndServe(":8010", nil)
+	err = http.ListenAndServe(":8010", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
