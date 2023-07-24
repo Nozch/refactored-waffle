@@ -1,16 +1,25 @@
 package main
 
 import (
+
 	"encoding/json"
 	"fmt"
-	"strings"
-
 	"log"
 	"net/http"
+
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt"
+	"github.com/gorilla/mux"
+	"github.com/jmoiron/sqlx"
 )
+type User struct {
+	ID int `json:"id"`
+	Username string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+}
+
 
 //資格情報
 type Credentials struct {
@@ -22,6 +31,8 @@ type Token struct {
 	Token string `json:"token"`
 }
 
+var db *sqlx.DB
+
 var users = map[string]string{
 	"user1": "password1",
 	"user2": "password2",
@@ -30,7 +41,7 @@ var users = map[string]string{
 var jwtKey = []byte("your_secret_key")
 
 //トークンの文字列を作る
-func generateToken(username string) (string, error) {
+func GenerateToken(username string) (string, error) {
 	expirationTime := time.Now().Add(24 * time.Hour)
 	//クレームを設定
 	claims := &jwt.StandardClaims{
@@ -71,7 +82,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	//エラー3. トークンの作成に失敗
-	tokenString, err := generateToken(creds.Username)
+	tokenString, err := GenerateToken(creds.Username)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)	
 		return
@@ -116,12 +127,85 @@ func VerifyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 
+func UsersHandler(w http.ResponseWriter, r *http.Request) {
+
+	switch r.Method {
+	case "GET":
+		users := []User{}
+		err := db.Select(&users, "SELECT * FROM users")
+		if err != nil {
+			http.Error(w, "Failed to get users", http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(users)
+	case "POST":
+		var user User
+		err := json.NewDecoder(r.Body).Decode(&user)
+		if err != nil {
+			http.Error(w, "Failed to parse request body", http.StatusBadRequest)
+			return
+		}
+
+		_, err = db.NamedExec(`INSERT INTO users (username, password_hash) VALUES (:username, :password)`,
+			map[string]interface{}{
+				"username": user.Username,
+				"password_hash": user.PasswordHash,
+			})
+			if err != nil {
+				http.Error(w, "Failed to insert user", http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusCreated)
+	case "PUT":
+		var user User
+		err := json.NewDecoder(r.Body).Decode(&user)
+		if err != nil {
+			http.Error(w, "Failed to parse request body", http.StatusBadRequest)
+			return
+		}
+		
+		_, err = db.NamedExec(`UPDATE users SET username = :username, password_hash = :password_hash`, 
+		map[string]interface{}{
+			"id": user.ID,
+			"username": user.Username,
+			"password": user.PasswordHash,
+		})
+	if err != nil {
+		http.Error(w, "Failed to update user", http.StatusInternalServerError)
+		return 
+	}
+
+	w.WriteHeader(http.StatusOK)
+
+	case "DELETE":
+		vars := mux.Vars(r)
+		id, ok := vars["id"]
+		if !ok {
+			http.Error(w, "Missing URL parameter id", http.StatusBadRequest)
+			return
+		}
+		_, err := db.Exec(`DELETE FROM users WHERE id = $1`, id)
+		if err != nil {
+			http.Error(w, "Failed to delete user", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	default:
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+	}
+}
+
 func main() {
-	http.HandleFunc("/login", LoginHandler)
-	http.HandleFunc("/verify", VerifyHandler)
-	 
-	// http.HandleFunc("/welcome", WelcomeHandler)
-	// http.HandleFunc("/refresh", RefreshHandler)
+	router := mux.NewRouter()
+
+	router.HandleFunc("/users/{id}", UsersHandler)
+	router.HandleFunc("/login", LoginHandler)
+	router.HandleFunc("/verify", VerifyHandler)
+
+	http.Handle("/", router)
+
 	log.Println("Starting server on :8010")
 	err := http.ListenAndServe(":8010", nil)
 	if err != nil {
