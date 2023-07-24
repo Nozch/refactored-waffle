@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"log"
 	"net/http"
@@ -81,8 +83,43 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(newToken)
 }
 
+func VerifyHandler(w http.ResponseWriter, r *http.Request) {
+    // Get the token from the header
+    authHeader := r.Header.Get("Authorization")
+    tokenString := strings.Split(authHeader, " ")[1]
+
+    // Now parse the token
+    token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+        // Don't forget to validate the alg is what you expect:
+        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+            return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+        }
+
+        // jwtKey is our secret key
+        return jwtKey, nil
+    })
+
+    if err != nil {
+        http.Error(w, "Invalid token", http.StatusUnauthorized)
+        return
+    }
+
+    if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+        username := claims["sub"].(string)
+        // Respond with a message that includes the username from the token
+        w.Write([]byte(fmt.Sprintf("Hello, %s", username)))
+    } else {
+        http.Error(w, "Invalid token", http.StatusUnauthorized)
+        return
+    }
+	
+}
+
+
 func main() {
 	http.HandleFunc("/login", LoginHandler)
+	http.HandleFunc("/verify", VerifyHandler)
+	 
 	// http.HandleFunc("/welcome", WelcomeHandler)
 	// http.HandleFunc("/refresh", RefreshHandler)
 	log.Println("Starting server on :8010")
